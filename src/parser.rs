@@ -12,14 +12,20 @@ pub enum Error {
     #[error("{0}")]
     Syntax(String),
 
-    #[error("invalid integer literal")]
-    InvalidNumber(#[from] std::num::ParseIntError),
+    #[error("invalid integer literal `{literal}` at line {line}, column {column}")]
+    InvalidNumber {
+        literal: String,
+        line: usize,
+        column: usize,
+        #[source]
+        source: std::num::ParseIntError,
+    },
 
-    #[error("{0}")]
+    #[error("I/O error")]
     Io(#[from] std::io::Error),
 
     #[error("unexpected parse tree structure in {0}")]
-    Grammar(&'static str),
+    Grammar(String),
 }
 
 #[derive(DeriveParser)]
@@ -28,6 +34,43 @@ struct TeaLangParser;
 
 type ParseResult<T> = Result<T, Error>;
 type Pair<'a> = pest::iterators::Pair<'a, Rule>;
+
+fn compact_snippet(snippet: &str) -> String {
+    const MAX_CHARS: usize = 48;
+
+    let compact = snippet.split_whitespace().collect::<Vec<_>>().join(" ");
+    let normalized = if compact.is_empty() {
+        snippet.trim().to_string()
+    } else {
+        compact
+    };
+
+    if normalized.is_empty() {
+        return "<empty>".to_string();
+    }
+
+    let mut chars = normalized.chars();
+    let preview: String = chars.by_ref().take(MAX_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{preview}...")
+    } else {
+        preview
+    }
+}
+
+fn grammar_error(context: &'static str, pair: &Pair<'_>) -> Error {
+    let span = pair.as_span();
+    let (line, column) = span.start_pos().line_col();
+    let near = compact_snippet(span.as_str());
+
+    Error::Grammar(format!(
+        "{context} at line {line}, column {column}, near `{near}`"
+    ))
+}
+
+fn grammar_error_static(context: &'static str) -> Error {
+    Error::Grammar(context.to_string())
+}
 
 pub struct Parser<'a> {
     input: &'a str,
@@ -55,7 +98,7 @@ impl<'a> Generator for Parser<'a> {
         let ast = self
             .program
             .as_ref()
-            .ok_or(Error::Grammar("output before generate"))?;
+            .ok_or_else(|| grammar_error_static("output before generate"))?;
         write!(w, "{ast}")?;
         Ok(())
     }
@@ -98,6 +141,7 @@ fn get_pos(pair: &Pair) -> usize {
 }
 
 fn parse_use_stmt(pair: Pair) -> ParseResult<ast::UseStmt> {
+    let pair_for_error = pair.clone();
     for inner in pair.into_inner() {
         if inner.as_rule() == Rule::identifier {
             return Ok(ast::UseStmt {
@@ -105,7 +149,7 @@ fn parse_use_stmt(pair: Pair) -> ParseResult<ast::UseStmt> {
             });
         }
     }
-    Err(Error::Grammar("use_stmt"))
+    Err(grammar_error("use_stmt", &pair_for_error))
 }
 
 fn parse_program_element(pair: Pair) -> ParseResult<Option<Box<ast::ProgramElement>>> {
@@ -163,6 +207,7 @@ fn parse_var_decl_list(pair: Pair) -> ParseResult<Vec<ast::VarDecl>> {
 }
 
 fn parse_var_decl(pair: Pair) -> ParseResult<Box<ast::VarDecl>> {
+    let pair_for_error = pair.clone();
     let mut identifier: Option<String> = None;
     let mut type_specifier: Rc<Option<ast::TypeSpecifier>> = Rc::new(None);
     let mut array_len: Option<usize> = None;
@@ -186,7 +231,8 @@ fn parse_var_decl(pair: Pair) -> ParseResult<Box<ast::VarDecl>> {
         }
     }
 
-    let identifier = identifier.ok_or(Error::Grammar("var_decl.identifier"))?;
+    let identifier =
+        identifier.ok_or_else(|| grammar_error("var_decl.identifier", &pair_for_error))?;
     let inner = if is_slice {
         ast::VarDeclInner::Slice
     } else if let Some(len) = array_len {
@@ -227,10 +273,19 @@ fn parse_type_spec(pair: Pair) -> ParseResult<Rc<Option<ast::TypeSpecifier>>> {
 }
 
 fn parse_num(pair: Pair) -> ParseResult<i32> {
-    Ok(pair.as_str().parse()?)
+    let literal = pair.as_str().to_string();
+    let (line, column) = pair.as_span().start_pos().line_col();
+
+    literal.parse().map_err(|source| Error::InvalidNumber {
+        literal,
+        line,
+        column,
+        source,
+    })
 }
 
 fn parse_var_decl_stmt(pair: Pair) -> ParseResult<Box<ast::VarDeclStmt>> {
+    let pair_for_error = pair.clone();
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::var_def => {
@@ -247,10 +302,11 @@ fn parse_var_decl_stmt(pair: Pair) -> ParseResult<Box<ast::VarDeclStmt>> {
         }
     }
 
-    Err(Error::Grammar("var_decl_stmt"))
+    Err(grammar_error("var_decl_stmt", &pair_for_error))
 }
 
 fn parse_var_def(pair: Pair) -> ParseResult<Box<ast::VarDef>> {
+    let pair_for_error = pair.clone();
     let inner_pairs: Vec<_> = pair.into_inner().collect();
 
     let identifier = inner_pairs[0].as_str().to_string();
@@ -266,7 +322,7 @@ fn parse_var_def(pair: Pair) -> ParseResult<Box<ast::VarDef>> {
             inner_pairs
                 .iter()
                 .find(|p| p.as_rule() == Rule::num)
-                .ok_or(Error::Grammar("var_def.array_len"))?
+                .ok_or_else(|| grammar_error("var_def.array_len", &pair_for_error))?
                 .clone(),
         )? as usize;
 
@@ -275,7 +331,7 @@ fn parse_var_def(pair: Pair) -> ParseResult<Box<ast::VarDef>> {
                 inner_pairs
                     .iter()
                     .find(|p| p.as_rule() == Rule::type_spec)
-                    .ok_or(Error::Grammar("var_def.type_spec"))?
+                    .ok_or_else(|| grammar_error("var_def.type_spec", &pair_for_error))?
                     .clone(),
             )?
         } else {
@@ -286,7 +342,7 @@ fn parse_var_def(pair: Pair) -> ParseResult<Box<ast::VarDef>> {
             inner_pairs
                 .iter()
                 .find(|p| p.as_rule() == Rule::right_val_list)
-                .ok_or(Error::Grammar("var_def.vals"))?
+                .ok_or_else(|| grammar_error("var_def.vals", &pair_for_error))?
                 .clone(),
         )?;
 
@@ -302,7 +358,7 @@ fn parse_var_def(pair: Pair) -> ParseResult<Box<ast::VarDef>> {
                 inner_pairs
                     .iter()
                     .find(|p| p.as_rule() == Rule::type_spec)
-                    .ok_or(Error::Grammar("var_def.type_spec"))?
+                    .ok_or_else(|| grammar_error("var_def.type_spec", &pair_for_error))?
                     .clone(),
             )?
         } else {
@@ -313,7 +369,7 @@ fn parse_var_def(pair: Pair) -> ParseResult<Box<ast::VarDef>> {
             inner_pairs
                 .iter()
                 .find(|p| p.as_rule() == Rule::right_val)
-                .ok_or(Error::Grammar("var_def.val"))?
+                .ok_or_else(|| grammar_error("var_def.val", &pair_for_error))?
                 .clone(),
         )?;
 
@@ -336,6 +392,7 @@ fn parse_right_val_list(pair: Pair) -> ParseResult<Vec<ast::RightVal>> {
 }
 
 fn parse_right_val(pair: Pair) -> ParseResult<Box<ast::RightVal>> {
+    let pair_for_error = pair.clone();
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::bool_expr => {
@@ -352,14 +409,15 @@ fn parse_right_val(pair: Pair) -> ParseResult<Box<ast::RightVal>> {
         }
     }
 
-    Err(Error::Grammar("right_val"))
+    Err(grammar_error("right_val", &pair_for_error))
 }
 
 fn parse_bool_expr(pair: Pair) -> ParseResult<Box<ast::BoolExpr>> {
+    let pair_for_error = pair.clone();
     let inner_pairs: Vec<_> = pair.into_inner().collect();
 
     if inner_pairs.is_empty() {
-        return Err(Error::Grammar("bool_expr"));
+        return Err(grammar_error("bool_expr", &pair_for_error));
     }
 
     let mut expr = parse_bool_and_term(inner_pairs[0].clone())?;
@@ -386,10 +444,11 @@ fn parse_bool_expr(pair: Pair) -> ParseResult<Box<ast::BoolExpr>> {
 }
 
 fn parse_bool_and_term(pair: Pair) -> ParseResult<Box<ast::BoolExpr>> {
+    let pair_for_error = pair.clone();
     let inner_pairs: Vec<_> = pair.into_inner().collect();
 
     if inner_pairs.is_empty() {
-        return Err(Error::Grammar("bool_and_term"));
+        return Err(grammar_error("bool_and_term", &pair_for_error));
     }
 
     let first_unit = parse_bool_unit_atom(inner_pairs[0].clone())?;
@@ -425,6 +484,7 @@ fn parse_bool_and_term(pair: Pair) -> ParseResult<Box<ast::BoolExpr>> {
 }
 
 fn parse_bool_unit_atom(pair: Pair) -> ParseResult<Box<ast::BoolUnit>> {
+    let pair_for_error = pair.clone();
     let pos = get_pos(&pair);
     let inner_pairs: Vec<_> = pair.into_inner().collect();
 
@@ -451,10 +511,11 @@ fn parse_bool_unit_atom(pair: Pair) -> ParseResult<Box<ast::BoolUnit>> {
         }
     }
 
-    Err(Error::Grammar("bool_unit_atom"))
+    Err(grammar_error("bool_unit_atom", &pair_for_error))
 }
 
 fn parse_bool_unit_paren(pair: Pair) -> ParseResult<Box<ast::BoolUnit>> {
+    let pair_for_error = pair.clone();
     let pos = get_pos(&pair);
     let inner_pairs: Vec<_> = pair.into_inner().collect();
 
@@ -470,22 +531,24 @@ fn parse_bool_unit_paren(pair: Pair) -> ParseResult<Box<ast::BoolUnit>> {
         }));
     }
 
-    parse_comparison_pair_triple(pos, &filtered, "bool_unit_paren")
+    parse_comparison_pair_triple(pos, &filtered, "bool_unit_paren", &pair_for_error)
 }
 
 fn parse_bool_comparison(pair: Pair) -> ParseResult<Box<ast::BoolUnit>> {
+    let pair_for_error = pair.clone();
     let pos = get_pos(&pair);
     let inner_pairs: Vec<_> = pair.into_inner().collect();
-    parse_comparison_pair_triple(pos, &inner_pairs, "bool_comparison")
+    parse_comparison_pair_triple(pos, &inner_pairs, "bool_comparison", &pair_for_error)
 }
 
 fn parse_comparison_pair_triple(
     pos: usize,
     pairs: &[Pair],
     context: &'static str,
+    pair_for_error: &Pair<'_>,
 ) -> ParseResult<Box<ast::BoolUnit>> {
     if pairs.len() != 3 {
-        return Err(Error::Grammar(context));
+        return Err(grammar_error(context, pair_for_error));
     }
 
     parse_comparison_to_bool_unit(pos, pairs[0].clone(), pairs[1].clone(), pairs[2].clone())
@@ -508,6 +571,7 @@ fn parse_comparison_to_bool_unit(
 }
 
 fn parse_comp_op(pair: Pair) -> ParseResult<ast::ComOp> {
+    let pair_for_error = pair.clone();
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::op_lt => return Ok(ast::ComOp::Lt),
@@ -519,14 +583,15 @@ fn parse_comp_op(pair: Pair) -> ParseResult<ast::ComOp> {
             _ => {}
         }
     }
-    Err(Error::Grammar("comp_op"))
+    Err(grammar_error("comp_op", &pair_for_error))
 }
 
 fn parse_arith_expr(pair: Pair) -> ParseResult<Box<ast::ArithExpr>> {
+    let pair_for_error = pair.clone();
     let inner_pairs: Vec<_> = pair.into_inner().collect();
 
     if inner_pairs.is_empty() {
-        return Err(Error::Grammar("arith_expr"));
+        return Err(grammar_error("arith_expr", &pair_for_error));
     }
 
     let mut expr = parse_arith_term(inner_pairs[0].clone())?;
@@ -555,10 +620,11 @@ fn parse_arith_expr(pair: Pair) -> ParseResult<Box<ast::ArithExpr>> {
 }
 
 fn parse_arith_term(pair: Pair) -> ParseResult<Box<ast::ArithExpr>> {
+    let pair_for_error = pair.clone();
     let inner_pairs: Vec<_> = pair.into_inner().collect();
 
     if inner_pairs.is_empty() {
-        return Err(Error::Grammar("arith_term"));
+        return Err(grammar_error("arith_term", &pair_for_error));
     }
 
     let first_unit = parse_expr_unit(inner_pairs[0].clone())?;
@@ -595,6 +661,7 @@ fn parse_arith_term(pair: Pair) -> ParseResult<Box<ast::ArithExpr>> {
 }
 
 fn parse_arith_add_op(pair: Pair) -> ParseResult<ast::ArithBiOp> {
+    let pair_for_error = pair.clone();
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::op_add => return Ok(ast::ArithBiOp::Add),
@@ -602,10 +669,11 @@ fn parse_arith_add_op(pair: Pair) -> ParseResult<ast::ArithBiOp> {
             _ => {}
         }
     }
-    Err(Error::Grammar("arith_add_op"))
+    Err(grammar_error("arith_add_op", &pair_for_error))
 }
 
 fn parse_arith_mul_op(pair: Pair) -> ParseResult<ast::ArithBiOp> {
+    let pair_for_error = pair.clone();
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::op_mul => return Ok(ast::ArithBiOp::Mul),
@@ -613,10 +681,11 @@ fn parse_arith_mul_op(pair: Pair) -> ParseResult<ast::ArithBiOp> {
             _ => {}
         }
     }
-    Err(Error::Grammar("arith_mul_op"))
+    Err(grammar_error("arith_mul_op", &pair_for_error))
 }
 
 fn parse_expr_unit(pair: Pair) -> ParseResult<Box<ast::ExprUnit>> {
+    let pair_for_error = pair.clone();
     let pos = get_pos(&pair);
     let inner_pairs: Vec<_> = pair.into_inner().collect();
 
@@ -681,7 +750,7 @@ fn parse_expr_unit(pair: Pair) -> ParseResult<Box<ast::ExprUnit>> {
         return left_val_to_expr_unit(*base);
     }
 
-    Err(Error::Grammar("expr_unit"))
+    Err(grammar_error("expr_unit", &pair_for_error))
 }
 
 fn left_val_to_expr_unit(lval: ast::LeftVal) -> ParseResult<Box<ast::ExprUnit>> {
@@ -704,6 +773,7 @@ fn left_val_to_expr_unit(lval: ast::LeftVal) -> ParseResult<Box<ast::ExprUnit>> 
 }
 
 fn parse_index_expr(pair: Pair) -> ParseResult<Box<ast::IndexExpr>> {
+    let pair_for_error = pair.clone();
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::num => {
@@ -720,10 +790,11 @@ fn parse_index_expr(pair: Pair) -> ParseResult<Box<ast::IndexExpr>> {
             _ => {}
         }
     }
-    Err(Error::Grammar("index_expr"))
+    Err(grammar_error("index_expr", &pair_for_error))
 }
 
 fn parse_fn_call(pair: Pair) -> ParseResult<Box<ast::FnCall>> {
+    let pair_for_error = pair.clone();
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::module_prefixed_call => {
@@ -735,7 +806,7 @@ fn parse_fn_call(pair: Pair) -> ParseResult<Box<ast::FnCall>> {
             _ => {}
         }
     }
-    Err(Error::Grammar("fn_call"))
+    Err(grammar_error("fn_call", &pair_for_error))
 }
 
 fn parse_module_prefixed_call(pair: Pair) -> ParseResult<Box<ast::FnCall>> {
@@ -785,11 +856,12 @@ fn parse_local_call(pair: Pair) -> ParseResult<Box<ast::FnCall>> {
 }
 
 fn parse_left_val(pair: Pair) -> ParseResult<Box<ast::LeftVal>> {
+    let pair_for_error = pair.clone();
     let pos = get_pos(&pair);
     let inner_pairs: Vec<_> = pair.into_inner().collect();
 
     if inner_pairs.is_empty() {
-        return Err(Error::Grammar("left_val"));
+        return Err(grammar_error("left_val", &pair_for_error));
     }
 
     let id = inner_pairs[0].as_str().to_string();
@@ -847,6 +919,7 @@ fn parse_left_val_suffix(base: Box<ast::LeftVal>, suffix: Pair) -> ParseResult<B
 }
 
 fn parse_fn_decl_stmt(pair: Pair) -> ParseResult<Box<ast::FnDeclStmt>> {
+    let pair_for_error = pair.clone();
     for inner in pair.into_inner() {
         if inner.as_rule() == Rule::fn_decl {
             return Ok(Box::new(ast::FnDeclStmt {
@@ -855,7 +928,7 @@ fn parse_fn_decl_stmt(pair: Pair) -> ParseResult<Box<ast::FnDeclStmt>> {
         }
     }
 
-    Err(Error::Grammar("fn_decl_stmt"))
+    Err(grammar_error("fn_decl_stmt", &pair_for_error))
 }
 
 fn parse_fn_decl(pair: Pair) -> ParseResult<Box<ast::FnDecl>> {
@@ -880,6 +953,7 @@ fn parse_fn_decl(pair: Pair) -> ParseResult<Box<ast::FnDecl>> {
 }
 
 fn parse_param_decl(pair: Pair) -> ParseResult<Box<ast::ParamDecl>> {
+    let pair_for_error = pair.clone();
     for inner in pair.into_inner() {
         if inner.as_rule() == Rule::var_decl_list {
             return Ok(Box::new(ast::ParamDecl {
@@ -887,10 +961,11 @@ fn parse_param_decl(pair: Pair) -> ParseResult<Box<ast::ParamDecl>> {
             }));
         }
     }
-    Err(Error::Grammar("param_decl"))
+    Err(grammar_error("param_decl", &pair_for_error))
 }
 
 fn parse_fn_def(pair: Pair) -> ParseResult<Box<ast::FnDef>> {
+    let pair_for_error = pair.clone();
     let mut fn_decl = None;
     let mut stmts = Vec::new();
 
@@ -903,7 +978,7 @@ fn parse_fn_def(pair: Pair) -> ParseResult<Box<ast::FnDef>> {
     }
 
     Ok(Box::new(ast::FnDef {
-        fn_decl: fn_decl.ok_or(Error::Grammar("fn_def.fn_decl"))?,
+        fn_decl: fn_decl.ok_or_else(|| grammar_error("fn_def.fn_decl", &pair_for_error))?,
         stmts,
     }))
 }
@@ -911,6 +986,7 @@ fn parse_fn_def(pair: Pair) -> ParseResult<Box<ast::FnDef>> {
 // Statement parsing
 
 fn parse_code_block_stmt(pair: Pair) -> ParseResult<Box<ast::CodeBlockStmt>> {
+    let pair_for_error = pair.clone();
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::var_decl_stmt => {
@@ -962,10 +1038,11 @@ fn parse_code_block_stmt(pair: Pair) -> ParseResult<Box<ast::CodeBlockStmt>> {
         }
     }
 
-    Err(Error::Grammar("code_block_stmt"))
+    Err(grammar_error("code_block_stmt", &pair_for_error))
 }
 
 fn parse_assignment_stmt(pair: Pair) -> ParseResult<Box<ast::AssignmentStmt>> {
+    let pair_for_error = pair.clone();
     let mut left_val = None;
     let mut right_val = None;
 
@@ -978,12 +1055,14 @@ fn parse_assignment_stmt(pair: Pair) -> ParseResult<Box<ast::AssignmentStmt>> {
     }
 
     Ok(Box::new(ast::AssignmentStmt {
-        left_val: left_val.ok_or(Error::Grammar("assignment.left_val"))?,
-        right_val: right_val.ok_or(Error::Grammar("assignment.right_val"))?,
+        left_val: left_val.ok_or_else(|| grammar_error("assignment.left_val", &pair_for_error))?,
+        right_val: right_val
+            .ok_or_else(|| grammar_error("assignment.right_val", &pair_for_error))?,
     }))
 }
 
 fn parse_call_stmt(pair: Pair) -> ParseResult<Box<ast::CallStmt>> {
+    let pair_for_error = pair.clone();
     for inner in pair.into_inner() {
         if inner.as_rule() == Rule::fn_call {
             return Ok(Box::new(ast::CallStmt {
@@ -992,7 +1071,7 @@ fn parse_call_stmt(pair: Pair) -> ParseResult<Box<ast::CallStmt>> {
         }
     }
 
-    Err(Error::Grammar("call_stmt"))
+    Err(grammar_error("call_stmt", &pair_for_error))
 }
 
 fn parse_return_stmt(pair: Pair) -> ParseResult<Box<ast::ReturnStmt>> {
@@ -1008,6 +1087,7 @@ fn parse_return_stmt(pair: Pair) -> ParseResult<Box<ast::ReturnStmt>> {
 }
 
 fn parse_if_stmt(pair: Pair) -> ParseResult<Box<ast::IfStmt>> {
+    let pair_for_error = pair.clone();
     let mut bool_unit = None;
     let mut if_stmts = Vec::new();
     let mut else_stmts = None;
@@ -1039,13 +1119,14 @@ fn parse_if_stmt(pair: Pair) -> ParseResult<Box<ast::IfStmt>> {
     }
 
     Ok(Box::new(ast::IfStmt {
-        bool_unit: bool_unit.ok_or(Error::Grammar("cond.bool_unit"))?,
+        bool_unit: bool_unit.ok_or_else(|| grammar_error("cond.bool_unit", &pair_for_error))?,
         if_stmts,
         else_stmts,
     }))
 }
 
 fn parse_while_stmt(pair: Pair) -> ParseResult<Box<ast::WhileStmt>> {
+    let pair_for_error = pair.clone();
     let mut bool_unit = None;
     let mut stmts = Vec::new();
 
@@ -1067,7 +1148,7 @@ fn parse_while_stmt(pair: Pair) -> ParseResult<Box<ast::WhileStmt>> {
     }
 
     Ok(Box::new(ast::WhileStmt {
-        bool_unit: bool_unit.ok_or(Error::Grammar("cond.bool_unit"))?,
+        bool_unit: bool_unit.ok_or_else(|| grammar_error("cond.bool_unit", &pair_for_error))?,
         stmts,
     }))
 }

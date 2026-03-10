@@ -4,7 +4,7 @@ use crate::ir;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("I/O error: {0}")]
+    #[error("I/O error")]
     Io(#[from] std::io::Error),
 
     #[error("unsupported data type: {dtype:?}")]

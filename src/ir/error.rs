@@ -60,6 +60,6 @@ pub enum Error {
         member_type: String,
     },
 
-    #[error("I/O error: {0}")]
+    #[error("I/O error")]
     Io(#[from] std::io::Error),
 }
