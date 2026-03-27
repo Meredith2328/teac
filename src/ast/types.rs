@@ -1,5 +1,3 @@
-use std::rc::Rc;
-
 pub type Pos = usize;
 
 #[derive(Debug, Clone)]
@@ -19,5 +17,3 @@ pub struct TypeSpecifier {
     pub pos: Pos,
     pub inner: TypeSpecifierInner,
 }
-
-pub type SharedTypeSpec = Rc<Option<TypeSpecifier>>;

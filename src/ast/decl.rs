@@ -1,6 +1,6 @@
 use super::expr::{RightVal, RightValList};
 use super::stmt::CodeBlockStmtList;
-use super::types::SharedTypeSpec;
+use super::types::TypeSpecifier;
 use std::ops::Deref;
 
 #[derive(Debug, Clone)]
@@ -17,7 +17,7 @@ pub enum VarDeclInner {
 #[derive(Debug, Clone)]
 pub struct VarDecl {
     pub identifier: String,
-    pub type_specifier: SharedTypeSpec,
+    pub type_specifier: Option<TypeSpecifier>,
     pub inner: VarDeclInner,
 }
 
@@ -49,7 +49,7 @@ pub enum VarDefInner {
 #[derive(Debug, Clone)]
 pub struct VarDef {
     pub identifier: String,
-    pub type_specifier: SharedTypeSpec,
+    pub type_specifier: Option<TypeSpecifier>,
     pub inner: VarDefInner,
 }
 
@@ -79,7 +79,7 @@ pub struct ParamDecl {
 pub struct FnDecl {
     pub identifier: String,
     pub param_decl: Option<Box<ParamDecl>>,
-    pub return_dtype: SharedTypeSpec,
+    pub return_dtype: Option<TypeSpecifier>,
 }
 
 #[derive(Debug, Clone)]

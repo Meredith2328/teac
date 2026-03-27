@@ -157,7 +157,7 @@ impl<'ir> FunctionGenerator<'ir> {
     }
 
     fn plan_local_decl_storage(decl: &ast::VarDecl) -> Result<LocalStoragePlan, Error> {
-        let dtype = decl.type_specifier.as_ref().as_ref().map(Dtype::from);
+        let dtype = decl.type_specifier.as_ref().map(Dtype::from);
         match (&decl.inner, dtype.as_ref()) {
             (ast::VarDeclInner::Scalar, None) => Ok(LocalStoragePlan::Deferred),
             (ast::VarDeclInner::Scalar, Some(Dtype::I32)) => {
@@ -254,7 +254,7 @@ impl<'ir> FunctionGenerator<'ir> {
 
     pub fn handle_local_var_def(&mut self, def: &ast::VarDef) -> Result<(), Error> {
         let identifier = def.identifier.as_str();
-        let dtype = def.type_specifier.as_ref().as_ref().map(Dtype::from);
+        let dtype = def.type_specifier.as_ref().map(Dtype::from);
 
         let variable: LocalVariable = match &def.inner {
             ast::VarDefInner::Scalar(scalar) => {

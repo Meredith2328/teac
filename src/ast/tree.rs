@@ -104,7 +104,6 @@ impl DisplayAsTree for VarDecl {
         let type_str = self
             .type_specifier
             .as_ref()
-            .clone()
             .map_or("unknown".to_string(), |ts| ts.to_string());
         writeln!(
             f,

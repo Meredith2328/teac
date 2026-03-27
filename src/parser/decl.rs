@@ -1,5 +1,3 @@
-use std::rc::Rc;
-
 use crate::ast;
 
 use super::ParseContext;
@@ -83,7 +81,7 @@ impl<'a> ParseContext<'a> {
     pub(crate) fn parse_var_decl(&self, pair: Pair) -> ParseResult<Box<ast::VarDecl>> {
         let pair_for_error = pair.clone();
         let mut identifier: Option<String> = None;
-        let mut type_specifier: Rc<Option<ast::TypeSpecifier>> = Rc::new(None);
+        let mut type_specifier: Option<ast::TypeSpecifier> = None;
         let mut array_len: Option<usize> = None;
 
         for inner in pair.into_inner() {
@@ -119,7 +117,7 @@ impl<'a> ParseContext<'a> {
     pub(crate) fn parse_type_spec(
         &self,
         pair: Pair,
-    ) -> ParseResult<Rc<Option<ast::TypeSpecifier>>> {
+    ) -> ParseResult<Option<ast::TypeSpecifier>> {
         let pos = get_pos(&pair);
 
         let children: Vec<_> = pair.into_inner().collect();
@@ -132,33 +130,31 @@ impl<'a> ParseContext<'a> {
                         .iter()
                         .find(|c| c.as_rule() == Rule::type_spec)
                         .expect("Ref type_spec must have inner type_spec");
-                    let inner = self.parse_type_spec(inner_type_spec.clone())?;
-                    let inner_ts = inner
-                        .as_ref()
-                        .as_ref()
+                    let inner_ts = self
+                        .parse_type_spec(inner_type_spec.clone())?
                         .expect("Ref inner type_spec must not be empty");
-                    return Ok(Rc::new(Some(ast::TypeSpecifier {
+                    return Ok(Some(ast::TypeSpecifier {
                         pos,
-                        inner: ast::TypeSpecifierInner::Reference(Box::new(inner_ts.clone())),
-                    })));
+                        inner: ast::TypeSpecifierInner::Reference(Box::new(inner_ts)),
+                    }));
                 }
                 Rule::kw_i32 => {
-                    return Ok(Rc::new(Some(ast::TypeSpecifier {
+                    return Ok(Some(ast::TypeSpecifier {
                         pos,
                         inner: ast::TypeSpecifierInner::BuiltIn(ast::BuiltIn::Int),
-                    })));
+                    }));
                 }
                 Rule::identifier => {
-                    return Ok(Rc::new(Some(ast::TypeSpecifier {
+                    return Ok(Some(ast::TypeSpecifier {
                         pos,
                         inner: ast::TypeSpecifierInner::Composite(child.as_str().to_string()),
-                    })));
+                    }));
                 }
                 _ => {}
             }
         }
 
-        Ok(Rc::new(None))
+        Ok(None)
     }
 
     pub(crate) fn parse_var_decl_stmt(
@@ -214,7 +210,7 @@ impl<'a> ParseContext<'a> {
                         .clone(),
                 )?
             } else {
-                Rc::new(None)
+                None
             };
 
             let initializer = self.parse_array_initializer(
@@ -243,7 +239,7 @@ impl<'a> ParseContext<'a> {
                         .clone(),
                 )?
             } else {
-                Rc::new(None)
+                None
             };
 
             let val = self.parse_right_val(
@@ -305,7 +301,7 @@ impl<'a> ParseContext<'a> {
     fn parse_fn_decl(&self, pair: Pair) -> ParseResult<Box<ast::FnDecl>> {
         let mut identifier = String::new();
         let mut param_decl = None;
-        let mut return_dtype = Rc::new(None);
+        let mut return_dtype = None;
 
         for inner in pair.into_inner() {
             match inner.as_rule() {
